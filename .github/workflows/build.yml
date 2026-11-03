@@ -1,0 +1,232 @@
+name: MY WEB TO APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "Android App Name"
+        required: true
+        default: "My Website App"
+        type: string
+      package_name:
+        description: "Android Package Name"
+        required: true
+        default: "com.mywebapk.generated"
+        type: string
+      website_url:
+        description: "Website URL (https://...)"
+        required: true
+        default: "https://example.com"
+        type: string
+      version_name:
+        description: "App Version"
+        required: true
+        default: "1.0.0"
+        type: string
+      version_code:
+        description: "Version Code"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Generate Android project
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          PACKAGE_NAME: ${{ inputs.package_name }}
+          WEBSITE_URL: ${{ inputs.website_url }}
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          python3 - <<'PY'
+          import os, re, json, html, pathlib, sys
+
+          app = os.environ["APP_NAME"].strip()
+          package = os.environ["PACKAGE_NAME"].strip()
+          url = os.environ["WEBSITE_URL"].strip()
+          version = os.environ["VERSION_NAME"].strip()
+          code = os.environ["VERSION_CODE"].strip()
+
+          if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", package):
+              sys.exit("Invalid package name")
+          if not re.fullmatch(r"[0-9]+", code) or int(code) < 1:
+              sys.exit("Version code must be a positive number")
+          if not url.startswith(("https://", "http://")):
+              sys.exit("Website URL must start with https:// or http://")
+          if not app or len(app) > 50:
+              sys.exit("App name must contain 1 to 50 characters")
+
+          root = pathlib.Path("app/src/main")
+          java_dir = root / "java" / pathlib.Path(*package.split("."))
+          java_dir.mkdir(parents=True, exist_ok=True)
+          (root / "res" / "values").mkdir(parents=True, exist_ok=True)
+
+          pathlib.Path("settings.gradle").write_text(
+              'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\n'
+              'dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }\n'
+              'rootProject.name = "MyWebToApk"\n'
+              'include(":app")\n'
+          )
+
+          pathlib.Path("build.gradle").write_text(
+              'plugins {\n'
+              '    id "com.android.application" version "8.7.3" apply false\n'
+              '}\n'
+          )
+
+          pathlib.Path("gradle.properties").write_text(
+              'org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8\n'
+              'android.useAndroidX=true\n'
+          )
+
+          build_gradle = f"""
+          plugins {{
+              id 'com.android.application'
+          }}
+
+          android {{
+              namespace '{package}'
+              compileSdk 35
+
+              defaultConfig {{
+                  applicationId '{package}'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode {int(code)}
+                  versionName {json.dumps(version)}
+                  buildConfigField "String", "WEBSITE_URL", {json.dumps(json.dumps(url))}
+              }}
+
+              buildFeatures {{
+                  buildConfig true
+              }}
+          }}
+          """
+          pathlib.Path("app").mkdir(exist_ok=True)
+          pathlib.Path("app/build.gradle").write_text(build_gradle)
+
+          manifest = f"""<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <application
+                  android:label="{html.escape(app, quote=True)}"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          """
+          (root / "AndroidManifest.xml").write_text(manifest)
+
+          java = r'''package PACKAGE_PLACEHOLDER;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.view.View;
+          import android.widget.ProgressBar;
+          import android.widget.LinearLayout;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+              private ProgressBar progress;
+
+              @Override
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(LinearLayout.VERTICAL);
+
+                  progress = new ProgressBar(this, null,
+                      android.R.attr.progressBarStyleHorizontal);
+                  progress.setMax(100);
+                  layout.addView(progress,
+                      new LinearLayout.LayoutParams(-1, 4));
+
+                  webView = new WebView(this);
+                  layout.addView(webView,
+                      new LinearLayout.LayoutParams(-1, 0, 1));
+
+                  setContentView(layout);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onProgressChanged(WebView view, int value) {
+                          progress.setProgress(value);
+                          progress.setVisibility(
+                              value >= 100 ? View.GONE : View.VISIBLE);
+                      }
+                  });
+
+                  webView.loadUrl(BuildConfig.WEBSITE_URL);
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          '''
+          java = java.replace("PACKAGE_PLACEHOLDER", package)
+          (java_dir / "MainActivity.java").write_text(java)
+          PY
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: my-web-to-apk-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+        
