@@ -9,21 +9,25 @@ on:
         required: true
         default: "My Website App"
         type: string
+
       package_name:
         description: "Android Package Name"
         required: true
         default: "com.mywebapk.generated"
         type: string
+
       website_url:
         description: "Website URL"
         required: true
         default: "https://example.com"
         type: string
+
       version_name:
         description: "App Version"
         required: true
         default: "1.0.0"
         type: string
+
       version_code:
         description: "Version Code"
         required: true
@@ -38,31 +42,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Download repository
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. Java setup
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
+      # 3. Gradle setup
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
+      # 4. Android SDK setup
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
+          echo "${ANDROID_HOME}/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "${ANDROID_HOME}/platform-tools" >> "$GITHUB_PATH"
+          echo "Android SDK path: ${ANDROID_HOME}"
+          ls -la "${ANDROID_HOME}/cmdline-tools"
 
+      # 5. Accept licenses
       - name: Accept Android SDK licenses
         run: |
           yes | sdkmanager --licenses || true
 
+      # 6. Install SDK packages
       - name: Install Android SDK packages
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
+      # 7. Generate Android project
       - name: Generate Android project
         env:
           APP_NAME: ${{ inputs.app_name }}
@@ -70,6 +89,7 @@ jobs:
           WEBSITE_URL: ${{ inputs.website_url }}
           VERSION_NAME: ${{ inputs.version_name }}
           VERSION_CODE: ${{ inputs.version_code }}
+
         run: |
           python3 - <<'PY'
           import os
@@ -85,20 +105,24 @@ jobs:
           version = os.environ["VERSION_NAME"].strip()
           code = os.environ["VERSION_CODE"].strip()
 
-          if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", package):
-              sys.exit("Invalid package name")
+          if not re.fullmatch(
+              r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+",
+              package
+          ):
+              sys.exit("ERROR: Invalid package name")
 
           if not re.fullmatch(r"[0-9]+", code) or int(code) < 1:
-              sys.exit("Version code must be positive")
+              sys.exit("ERROR: Invalid version code")
 
           if not url.startswith(("https://", "http://")):
-              sys.exit("Website URL must start with http:// or https://")
+              sys.exit("ERROR: Website URL must start with http:// or https://")
 
           if not app or len(app) > 50:
-              sys.exit("App name must contain 1 to 50 characters")
+              sys.exit("ERROR: App name must contain 1 to 50 characters")
 
           root = pathlib.Path("app/src/main")
           java_dir = root / "java" / pathlib.Path(*package.split("."))
+
           java_dir.mkdir(parents=True, exist_ok=True)
           (root / "res" / "values").mkdir(parents=True, exist_ok=True)
 
@@ -180,6 +204,7 @@ jobs:
           import android.widget.LinearLayout;
 
           public class MainActivity extends Activity {
+
               private WebView webView;
               private ProgressBar progress;
 
@@ -190,15 +215,25 @@ jobs:
                   LinearLayout layout = new LinearLayout(this);
                   layout.setOrientation(LinearLayout.VERTICAL);
 
-                  progress = new ProgressBar(this, null,
-                      android.R.attr.progressBarStyleHorizontal);
+                  progress = new ProgressBar(
+                      this,
+                      null,
+                      android.R.attr.progressBarStyleHorizontal
+                  );
+
                   progress.setMax(100);
-                  layout.addView(progress,
-                      new LinearLayout.LayoutParams(-1, 4));
+
+                  layout.addView(
+                      progress,
+                      new LinearLayout.LayoutParams(-1, 4)
+                  );
 
                   webView = new WebView(this);
-                  layout.addView(webView,
-                      new LinearLayout.LayoutParams(-1, 0, 1));
+
+                  layout.addView(
+                      webView,
+                      new LinearLayout.LayoutParams(-1, 0, 1)
+                  );
 
                   setContentView(layout);
 
@@ -207,12 +242,18 @@ jobs:
                   settings.setDomStorageEnabled(true);
 
                   webView.setWebViewClient(new WebViewClient());
+
                   webView.setWebChromeClient(new WebChromeClient() {
                       @Override
-                      public void onProgressChanged(WebView view, int value) {
+                      public void onProgressChanged(
+                          WebView view,
+                          int value
+                      ) {
                           progress.setProgress(value);
+
                           progress.setVisibility(
-                              value >= 100 ? View.GONE : View.VISIBLE);
+                              value >= 100 ? View.GONE : View.VISIBLE
+                          );
                       }
                   });
 
@@ -231,12 +272,24 @@ jobs:
           '''
 
           java = java.replace("PACKAGE_PLACEHOLDER", package)
+
           (java_dir / "MainActivity.java").write_text(java)
+
+          print("Android project generated successfully")
           PY
 
+      # 8. Build APK
       - name: Build APK
-        run: gradle --no-daemon assembleDebug
+        run: |
+          gradle --no-daemon assembleDebug
 
+      # 9. Check APK
+      - name: Check APK
+        run: |
+          ls -lh app/build/outputs/apk/debug/
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+      # 10. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
