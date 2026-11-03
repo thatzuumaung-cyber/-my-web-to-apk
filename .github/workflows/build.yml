@@ -1,3 +1,4 @@
+
 name: MY WEB TO APK Builder
 
 on:
@@ -14,7 +15,7 @@ on:
         default: "com.mywebapk.generated"
         type: string
       website_url:
-        description: "Website URL (https://...)"
+        description: "Website URL"
         required: true
         default: "https://example.com"
         type: string
@@ -54,10 +55,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Accept Android SDK licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Generate Android project
         env:
@@ -68,7 +72,12 @@ jobs:
           VERSION_CODE: ${{ inputs.version_code }}
         run: |
           python3 - <<'PY'
-          import os, re, json, html, pathlib, sys
+          import os
+          import re
+          import json
+          import html
+          import pathlib
+          import sys
 
           app = os.environ["APP_NAME"].strip()
           package = os.environ["PACKAGE_NAME"].strip()
@@ -78,10 +87,13 @@ jobs:
 
           if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+", package):
               sys.exit("Invalid package name")
+
           if not re.fullmatch(r"[0-9]+", code) or int(code) < 1:
-              sys.exit("Version code must be a positive number")
+              sys.exit("Version code must be positive")
+
           if not url.startswith(("https://", "http://")):
-              sys.exit("Website URL must start with https:// or http://")
+              sys.exit("Website URL must start with http:// or https://")
+
           if not app or len(app) > 50:
               sys.exit("App name must contain 1 to 50 characters")
 
@@ -131,6 +143,7 @@ jobs:
               }}
           }}
           """
+
           pathlib.Path("app").mkdir(exist_ok=True)
           pathlib.Path("app/build.gradle").write_text(build_gradle)
 
@@ -151,6 +164,7 @@ jobs:
               </application>
           </manifest>
           """
+
           (root / "AndroidManifest.xml").write_text(manifest)
 
           java = r'''package PACKAGE_PLACEHOLDER;
@@ -215,6 +229,7 @@ jobs:
               }
           }
           '''
+
           java = java.replace("PACKAGE_PLACEHOLDER", package)
           (java_dir / "MainActivity.java").write_text(java)
           PY
@@ -229,4 +244,3 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7
-        
