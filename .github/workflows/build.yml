@@ -1,9 +1,17 @@
-
 name: MY WEB TO APK Builder
 
 on:
   workflow_dispatch:
     inputs:
+      source_type:
+        description: "Choose Website URL or HTML ZIP"
+        required: true
+        default: "url"
+        type: choice
+        options:
+          - url
+          - html_zip
+
       app_name:
         description: "Android App Name"
         required: true
@@ -17,9 +25,15 @@ on:
         type: string
 
       website_url:
-        description: "Website URL"
-        required: true
-        default: "https://example.com"
+        description: "Website URL (for url mode)"
+        required: false
+        default: "https://www.wikipedia.org"
+        type: string
+
+      site_zip_path:
+        description: "HTML ZIP path inside repository"
+        required: false
+        default: "site.zip"
         type: string
 
       version_name:
@@ -42,24 +56,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Download repository
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Java setup
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # 3. Gradle setup
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      # 4. Android SDK setup
       - name: Set up Android SDK
         run: |
           echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
@@ -68,12 +78,10 @@ jobs:
           echo "Android SDK path: ${ANDROID_HOME}"
           ls -la "${ANDROID_HOME}/cmdline-tools"
 
-      # 5. Accept licenses
       - name: Accept Android SDK licenses
         run: |
           yes | sdkmanager --licenses || true
 
-      # 6. Install SDK packages
       - name: Install Android SDK packages
         run: |
           sdkmanager \
@@ -81,15 +89,15 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      # 7. Generate Android project
       - name: Generate Android project
         env:
+          SOURCE_TYPE: ${{ inputs.source_type }}
           APP_NAME: ${{ inputs.app_name }}
           PACKAGE_NAME: ${{ inputs.package_name }}
           WEBSITE_URL: ${{ inputs.website_url }}
+          SITE_ZIP_PATH: ${{ inputs.site_zip_path }}
           VERSION_NAME: ${{ inputs.version_name }}
           VERSION_CODE: ${{ inputs.version_code }}
-
         run: |
           python3 - <<'PY'
           import os
@@ -97,11 +105,14 @@ jobs:
           import json
           import html
           import pathlib
+          import zipfile
           import sys
 
           app = os.environ["APP_NAME"].strip()
           package = os.environ["PACKAGE_NAME"].strip()
+          mode = os.environ["SOURCE_TYPE"].strip()
           url = os.environ["WEBSITE_URL"].strip()
+          zip_path = pathlib.Path(os.environ["SITE_ZIP_PATH"].strip())
           version = os.environ["VERSION_NAME"].strip()
           code = os.environ["VERSION_CODE"].strip()
 
@@ -114,17 +125,45 @@ jobs:
           if not re.fullmatch(r"[0-9]+", code) or int(code) < 1:
               sys.exit("ERROR: Invalid version code")
 
-          if not url.startswith(("https://", "http://")):
-              sys.exit("ERROR: Website URL must start with http:// or https://")
-
           if not app or len(app) > 50:
               sys.exit("ERROR: App name must contain 1 to 50 characters")
 
+          if mode not in ("url", "html_zip"):
+              sys.exit("ERROR: Invalid source type")
+
+          if mode == "url" and not url.startswith(("https://", "http://")):
+              sys.exit("ERROR: Website URL must start with http:// or https://")
+
           root = pathlib.Path("app/src/main")
           java_dir = root / "java" / pathlib.Path(*package.split("."))
+          assets_dir = root / "assets" / "site"
 
           java_dir.mkdir(parents=True, exist_ok=True)
           (root / "res" / "values").mkdir(parents=True, exist_ok=True)
+
+          if mode == "html_zip":
+              if not zip_path.is_file():
+                  sys.exit("ERROR: ZIP file not found: " + str(zip_path))
+
+              assets_dir.mkdir(parents=True, exist_ok=True)
+
+              with zipfile.ZipFile(zip_path) as z:
+                  names = z.namelist()
+
+                  if "index.html" not in names:
+                      sys.exit(
+                          "ERROR: ZIP must contain index.html at its root"
+                      )
+
+                  for name in names:
+                      p = pathlib.PurePosixPath(name)
+
+                      if p.is_absolute() or ".." in p.parts:
+                          sys.exit("ERROR: Unsafe ZIP file path")
+
+                  z.extractall(assets_dir)
+
+              print("HTML ZIP extracted successfully")
 
           pathlib.Path("settings.gradle").write_text(
               'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\n'
@@ -159,6 +198,8 @@ jobs:
                   targetSdk 35
                   versionCode {int(code)}
                   versionName {json.dumps(version)}
+
+                  buildConfigField "String", "BUILD_MODE", {json.dumps(json.dumps(mode))}
                   buildConfigField "String", "WEBSITE_URL", {json.dumps(json.dumps(url))}
               }}
 
@@ -179,6 +220,7 @@ jobs:
                   android:usesCleartextTraffic="true">
                   <activity
                       android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize"
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
@@ -240,6 +282,8 @@ jobs:
                   WebSettings settings = webView.getSettings();
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
+                  settings.setAllowFileAccess(true);
+                  settings.setAllowContentAccess(true);
 
                   webView.setWebViewClient(new WebViewClient());
 
@@ -257,7 +301,13 @@ jobs:
                       }
                   });
 
-                  webView.loadUrl(BuildConfig.WEBSITE_URL);
+                  if (BuildConfig.BUILD_MODE.equals("html_zip")) {
+                      webView.loadUrl(
+                          "file:///android_asset/site/index.html"
+                      );
+                  } else {
+                      webView.loadUrl(BuildConfig.WEBSITE_URL);
+                  }
               }
 
               @Override
@@ -272,24 +322,21 @@ jobs:
           '''
 
           java = java.replace("PACKAGE_PLACEHOLDER", package)
-
           (java_dir / "MainActivity.java").write_text(java)
 
           print("Android project generated successfully")
+          print("Build mode:", mode)
           PY
 
-      # 8. Build APK
       - name: Build APK
         run: |
           gradle --no-daemon assembleDebug
 
-      # 9. Check APK
       - name: Check APK
         run: |
           ls -lh app/build/outputs/apk/debug/
           test -f app/build/outputs/apk/debug/app-debug.apk
 
-      # 10. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
